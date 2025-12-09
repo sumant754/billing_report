@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Billing Report Generator — with Excel export</title>
+
+  <!-- CDN dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.9/dayjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.5.28/dist/jspdf.plugin.autotable.min.js"></script>
+
+  <style>
+    body { font-family: Inter, Roboto, Arial, sans-serif; background:#f4f6f8; color:#111; margin:20px; }
+    .container{max-width:1060px;margin:0 auto;background:#fff;padding:18px;border-radius:8px;box-shadow:0 8px 30px rgba(10,10,20,0.06);}
+    h1{font-size:18px;margin:0 0 12px}
+    label{display:block;font-size:13px;margin:8px 0 6px}
+    input[type="text"], input[type="date"], select { padding:8px;border:1px solid #d6dbe0;border-radius:6px;width:100%;box-sizing:border-box }
+    .row{display:flex;gap:12px}
+    .col{flex:1}
+    .btn{display:inline-block;padding:8px 12px;border-radius:6px;border:none;background:#0b63d6;color:#fff;cursor:pointer}
+    .btn.secondary{background:#666}
+    .small{font-size:12px;color:#555}
+    table{width:100%;border-collapse:collapse;margin-top:8px}
+    th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;font-size:13px}
+    th{background:#fafafa}
+    .right{text-align:right}
+    .mapping-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    .preview{max-height:280px;overflow:auto;border:1px solid #eee;padding:8px;border-radius:6px;background:#fff}
+    footer.small{font-size:12px;color:#666;margin-top:12px}
+    .file-preview { width: 100%; height: 80px; border: 1px dashed #ccc; display:flex; align-items:center; justify-content:center; color:#888; margin-top:8px; border-radius:6px; background:#fafafa; }
+    .muted{color:#666;font-size:12px}
+    .note{font-size:12px;color:#444;margin-top:8px}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Billing Report Generator — with Excel export (loads 'Data' sheet & auto-maps)</h1>
+
+    <label>Upload Excel (will try to read sheet named <code>Data</code>, else first sheet)</label>
+    <input id="excelFile" type="file" accept=".xlsx,.xls,.csv" />
+
+    <div style="margin-top:12px">
+      <label>Upload reference PDF (optional)</label>
+      <input id="refPdf" type="file" accept="application/pdf" />
+      <div id="refPdfPreview" class="file-preview">No reference PDF loaded.</div>
+    </div>
+
+    <div style="margin-top:12px">
+      <label>Upload font file(s) (optional — .ttf/.otf). Embedding exact font gives pixel-perfect output.</label>
+      <input id="fontFiles" type="file" accept=".ttf,.otf" multiple />
+      <div class="muted">If you have the exact font used in GPIL.pdf, upload it here for best match.</div>
+    </div>
+
+    <hr style="margin:14px 0" />
+
+    <div class="row">
+      <div class="col">
+        <label>Customer Name (optional — used in title)</label>
+        <input id="customerName" type="text" placeholder="e.g. Sterlite DLP" />
+      </div>
+      <div class="col">
+        <label>Start Date (optional)</label>
+        <input id="startDate" type="date" />
+      </div>
+      <div class="col">
+        <label>End Date (optional)</label>
+        <input id="endDate" type="date" />
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:8px">
+      <div class="col">
+        <label>Subscription ID (optional)</label>
+        <input id="subscriptionId" type="text" placeholder="b098c25f-..." />
+      </div>
+      <div class="col">
+        <label>Worksheet name (metadata only)</label>
+        <input id="worksheetName" type="text" placeholder="Report_Nov_2025" />
+      </div>
+      <div class="col">
+        <label>Layout</label>
+        <select id="layoutMode">
+          <option value="exact">Exact GPIL.pdf layout</option>
+          <option value="modern">Modern (clean)</option>
+        </select>
+      </div>
+    </div>
+
+    <hr style="margin:12px 0" />
+
+    <div>
+      <label>Column mapping (automatically pre-filled for sheet 'Data')</label>
+      <div class="small muted">If you used standard column names in 'Data' sheet, the mapping will be preselected: Meter→Meter Name, ServiceName→Service Type, ResourceType→Resource Name, ResourceLocation→Region, Cost→Total Cost. You can override if needed.</div>
+      <div id="mappingGrid" class="mapping-grid" style="margin-top:8px"></div>
+
+      <div style="margin-top:8px">
+        <button id="autoMapBtn" class="btn secondary">Auto-map</button>
+        <button id="previewBtn" class="btn">Preview</button>
+        <button id="generateBtn" class="btn" style="background:#1f9d55">Generate PDF</button>
+        <button id="downloadExcelBtn" class="btn" style="background:#0b63d6;margin-left:8px">Download Excel</button>
+        <button id="resetBtn" class="btn secondary">Reset</button>
+      </div>
+    </div>
+
+    <div style="margin-top:12px">
+      <h3 style="margin:0 0 6px">Preview (first 20 rows)</h3>
+      <div id="previewArea" class="preview"><div class="muted">No data loaded.</div></div>
+      <div id="totalArea" class="note"></div>
+    </div>
+
+    <footer class="small">
+      Generated client-side in your browser. Upload a .ttf for exact font embedding if needed.
+    </footer>
+  </div>
+
+  <script>
+  (function(){
+    // expected output columns
+    const expectedCols = ["Meter Name","Service Type","Resource Name","Region","Total Cost"];
+
+    // mapping defaults from the user's instruction (source column -> target)
+    const defaultSourceToTarget = {
+      "Meter": "Meter Name",
+      "ServiceName": "Service Type",
+      "ResourceType": "Resource Name",
+      "ResourceLocation": "Region",
+      "Cost": "Total Cost"
+    };
+
+    let workbookRows = [];
+    let detectedCols = [];
+    let colMap = {};          // maps expected target -> actual source column name
+    let uploadedFonts = {};   // name -> ArrayBuffer
+
+    // DOM refs
+    const excelInput = document.getElementById('excelFile');
+    const refPdfInput = document.getElementById('refPdf');
+    const refPdfPreview = document.getElementById('refPdfPreview');
+    const mappingGrid = document.getElementById('mappingGrid');
+    const previewArea = document.getElementById('previewArea');
+    const autoMapBtn = document.getElementById('autoMapBtn');
+    const previewBtn = document.getElementById('previewBtn');
+    const generateBtn = document.getElementById('generateBtn');
+    const downloadExcelBtn = document.getElementById('downloadExcelBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const fontFilesInput = document.getElementById('fontFiles');
+
+    // Helper to show messages
+    function showMessage(msg){ previewArea.innerHTML = '<div class="muted">'+msg+'</div>'; }
+
+    function arrayBufferToBase64( buffer ) {
+      let binary = '';
+      const bytes = new Uint8Array( buffer );
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) binary += String.fromCharCode( bytes[ i ] );
+      return window.btoa( binary );
+    }
+
+    // Load Excel: prefer sheet named "Data"
+    excelInput.addEventListener('change', async (ev)=>{
+      const f = ev.target.files[0];
+      if(!f) return;
+      try {
+        const ab = await f.arrayBuffer();
+        const workbook = XLSX.read(ab, {type:'array'});
+        // prefer 'Data' sheet
+        let sheetName = workbook.SheetNames.find(n => n.toLowerCase() === 'data');
+        if(!sheetName) sheetName = workbook.SheetNames[0];
+        const ws = workbook.Sheets[sheetName];
+        const json = XLSX.utils.sheet_to_json(ws, {defval:""});
+        workbookRows = json;
+        detectedCols = json.length ? Object.keys(json[0]) : [];
+        // auto-pre-fill mapping according to defaults and detected columns
+        prefillMappingForDataSheet();
+        buildMappingUI();
+        showPreview();
+        refPdfPreview.textContent = `Loaded sheet: ${sheetName} (${workbookRows.length} rows)`;
+      } catch(err){
+        showMessage('Error reading Excel file. Ensure it is a valid .xlsx or .csv.');
+        console.error(err);
+      }
+    });
+
+    // preview reference PDF filename
+    refPdfInput.addEventListener('change', (ev)=>{
+      const f = ev.target.files[0];
+      refPdfPreview.textContent = f ? (f.name + ' — loaded (visual reference)') : 'No reference PDF loaded.';
+    });
+
+    // fonts
+    fontFilesInput.addEventListener('change', async (ev)=>{
+      const files = Array.from(ev.target.files || []);
+      for(const f of files){
+        const ab = await f.arrayBuffer();
+        uploadedFonts[f.name] = ab;
+      }
+      alert(Object.keys(uploadedFonts).length + " font(s) loaded for embedding.");
+    });
+
+    // Prefill mapping specifically for Data sheet using user-specified mapping
+    function prefillMappingForDataSheet(){
+      colMap = {};
+      const lowerDetected = detectedCols.map(c => c.toLowerCase());
+      Object.entries(defaultSourceToTarget).forEach(([src, tgt])=>{
+        const idx = lowerDetected.findIndex(c => c === src.toLowerCase());
+        if(idx >= 0) {
+          colMap[tgt] = detectedCols[idx];
+        } else {
+          const idx2 = lowerDetected.findIndex(c => c.includes(src.toLowerCase()));
+          if(idx2 >= 0) colMap[tgt] = detectedCols[idx2];
+        }
+      });
+      expectedCols.forEach(exp=>{
+        if(!colMap[exp]){
+          const token = exp.split(' ')[0].toLowerCase();
+          const idx = detectedCols.map(c=>c.toLowerCase()).findIndex(c=> c.includes(token));
+          if(idx>=0) colMap[exp] = detectedCols[idx];
+        }
+      });
+    }
+
+    // Build mapping UI: show dropdowns for each expected column (preselected when possible)
+    function buildMappingUI(){
+      mappingGrid.innerHTML = '';
+      expectedCols.forEach((exp)=>{
+        const wrapper = document.createElement('div');
+        wrapper.style.display = 'flex';
+        wrapper.style.flexDirection = 'column';
+        wrapper.style.gap = '6px';
+        const label = document.createElement('label'); label.textContent = exp;
+        const sel = document.createElement('select'); sel.style.padding = '6px';
+        sel.innerHTML = '<option value="">-- select or leave blank --</option>';
+        detectedCols.forEach(c => {
+          const opt = document.createElement('option'); opt.value = c; opt.textContent = c;
+          sel.appendChild(opt);
+        });
+        if(colMap[exp]) sel.value = colMap[exp];
+        sel.addEventListener('change', ()=> { colMap[exp] = sel.value; });
+        wrapper.appendChild(label); wrapper.appendChild(sel); mappingGrid.appendChild(wrapper);
+      });
+    }
+
+    // Auto-map generic heuristics (fallback button)
+    autoMapBtn.addEventListener('click', ()=>{
+      if(!detectedCols.length){ alert('No sheet loaded.'); return; }
+      prefillMappingForDataSheet();
+      const lowerCols = detectedCols.map(c=>c.toLowerCase());
+      const heuristics = {
+        "Meter Name": ["meter name","meter","metername","meter_name"],
+        "Service Type": ["service type","servicename","service name","service"],
+        "Resource Name": ["resource name","resourcetype","resource","resource_name"],
+        "Region": ["region","resourcelocation","location","resource location"],
+        "Total Cost": ["total cost","cost","amount","total","charge"]
+      };
+      expectedCols.forEach(exp=>{
+        if(!colMap[exp]){
+          for(const alt of heuristics[exp]){
+            const i = lowerCols.findIndex(c=> c.trim()===alt || c.includes(alt));
+            if(i>=0){ colMap[exp] = detectedCols[i]; break; }
+          }
+        }
+      });
+      expectedCols.forEach(exp=>{
+        if(!colMap[exp]){
+          const token = exp.split(' ')[0].toLowerCase();
+          const i = lowerCols.findIndex(c=> c.includes(token));
+          if(i>=0) colMap[exp] = detectedCols[i];
+        }
+      });
+      buildMappingUI();
+      alert('Auto-mapping complete. Verify dropdowns if needed.');
+    });
+
+    // Build output rows according to current mapping
+    function buildOutputRows(){
+      if(!workbookRows.length) return [];
+      return workbookRows.map((r, idx)=>{
+        const out = { __idx: idx+1 };
+        expectedCols.forEach(exp=>{
+          const src = colMap[exp];
+          out[exp] = src ? r[src] : "";
+        });
+        return out;
+      });
+    }
+
+    // Preview
+    previewBtn.addEventListener('click', showPreview);
+    function showPreview(){
+      const rows = buildOutputRows();
+      if(!rows.length){ showMessage('No data loaded.'); document.getElementById('totalArea').textContent=''; return; }
+      const head = ['#', ...expectedCols];
+      const slice = rows.slice(0,20);
+      let html = '<table><thead><tr>';
+      head.forEach(h=> html += `<th ${h==='Total Cost'?'class="right"':''}>${h}</th>`);
+      html += '</tr></thead><tbody>';
+      slice.forEach(r=>{
+        html += '<tr>';
+        html += `<td>${r.__idx}</td>`;
+        expectedCols.forEach(c=> html += `<td ${c==='Total Cost'?'class="right"':''}>${r[c]!==undefined?r[c]:""}</td>`);
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      html += `<div style="margin-top:8px"><strong>Total (all rows):</strong> ${computeTotal(rows).toFixed(2)}</div>`;
+      previewArea.innerHTML = html;
+      document.getElementById('totalArea').textContent = `Rows: ${rows.length} | Total: ${computeTotal(rows).toFixed(2)}`;
+    }
+
+    function computeTotal(rows){
+      return rows.reduce((s,r)=>{
+        const v = r["Total Cost"];
+        const n = (typeof v === 'number') ? v : parseFloat(String(v).replace(/[^0-9.-]+/g,'')) || 0;
+        return s + n;
+      }, 0);
+    }
+
+    // Reset
+    resetBtn.addEventListener('click', ()=>{
+      workbookRows=[]; detectedCols=[]; colMap={}; uploadedFonts={};
+      excelInput.value=''; refPdfInput.value=''; fontFilesInput.value='';
+      mappingGrid.innerHTML = ''; showMessage('Reset complete. Upload a new Excel file.');
+      document.getElementById('totalArea').textContent = '';
+    });
+
+    // PDF generation: styled output (no customer block) and footer label bold
+    generateBtn.addEventListener('click', async ()=>{
+      if(!workbookRows.length){ alert('Please upload an Excel file first.'); return; }
+      const customerName = document.getElementById('customerName').value.trim();
+      const startDate = document.getElementById('startDate').value;
+      const endDate = document.getElementById('endDate').value;
+      const subscriptionId = document.getElementById('subscriptionId').value.trim();
+
+      const rows = buildOutputRows();
+      const total = computeTotal(rows);
+
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const margin = 40;
+
+      // Page border
+      doc.setLineWidth(1);
+      doc.setDrawColor(200);
+      doc.rect(margin/2, margin/2, pageW - margin, pageH - margin);
+
+      // Embed uploaded fonts if any
+      if(Object.keys(uploadedFonts).length){
+        try {
+          for(const fname in uploadedFonts){
+            const ab = uploadedFonts[fname];
+            const b64 = arrayBufferToBase64(ab);
+            doc.addFileToVFS(fname, b64);
+            const family = fname.replace(/\.[^.]+$/,'');
+            doc.addFont(fname, family, 'normal');
+            doc.addFont(fname, family, 'bold');
+            doc.setFont(family, 'normal');
+          }
+        } catch(e){
+          console.warn('Font embedding error:', e);
+        }
+      }
+
+      // Build title text with colored "Azure"
+      const titleBase = `Microsoft `; // trailing space
+      const titleMiddle = `Azure`;
+      const titleRest = ` Utilization Report for ${customerName || ''}`;
+      const datePart = (startDate && endDate) ? ` - ${formatDateHuman(startDate)} – ${formatDateHuman(endDate)}` : '';
+      const fullTitle = titleBase + titleMiddle + titleRest + datePart;
+
+      // Improved header: auto-scale + wrap and color "Azure"
+      const maxHeaderWidth = pageW - (margin * 2);
+      let headerFontSize = 16;
+      doc.setFontSize(headerFontSize);
+      let textWidth = doc.getTextWidth(fullTitle);
+      while (textWidth > maxHeaderWidth && headerFontSize > 10) {
+        headerFontSize -= 1;
+        doc.setFontSize(headerFontSize);
+        textWidth = doc.getTextWidth(fullTitle);
+      }
+      doc.setFontSize(headerFontSize);
+      doc.setFont(undefined, 'bold');
+      const wrappedLines = doc.splitTextToSize(fullTitle, maxHeaderWidth);
+
+      const headerStartY = 60;
+      const lineHeight = headerFontSize + 2;
+      wrappedLines.forEach((line, i) => {
+        const y = headerStartY + (i * lineHeight);
+        doc.setTextColor(20,20,20);
+        doc.text(line, pageW/2, y, { align: 'center' });
+        const azureIndex = line.indexOf(titleMiddle);
+        if(azureIndex !== -1){
+          const lineWidth = doc.getTextWidth(line);
+          const startX = (pageW - lineWidth) / 2;
+          const prefix = line.slice(0, azureIndex);
+          const prefixWidth = doc.getTextWidth(prefix);
+          const azureX = startX + prefixWidth;
+          doc.setTextColor(80,170,255); // sky blue
+          doc.text(titleMiddle, azureX, y);
+          doc.setTextColor(20,20,20);
+        }
+      });
+
+      // Subtitle
+      const subtitleY = headerStartY + (wrappedLines.length * lineHeight) + 8;
+      doc.setFontSize(11);
+      doc.setFont(undefined, 'normal');
+      doc.text('Monthly Usage Summary', pageW/2, subtitleY, { align: 'center' });
+
+      // Prepare table data in exact order (mapped from Data sheet)
+      const tableHead = [["Meter Name","Service Type","Resource Name","Region","Total Cost"]];
+      const tableBody = rows.map(r=>[
+        r["Meter Name"]||'',
+        r["Service Type"]||'',
+        r["Resource Name"]||'',
+        r["Region"]||'',
+        formatNumber(r["Total Cost"])
+      ]);
+
+      // Start table below subtitle
+      const tableStartY = subtitleY + 24;
+      doc.autoTable({
+        startY: tableStartY,
+        head: tableHead,
+        body: tableBody,
+        theme: 'grid',
+        styles: { fontSize: 9, cellPadding: 6 },
+        headStyles: { fillColor: [242,242,242], textColor: 30, fontStyle: 'bold' },
+        columnStyles: { 4: { halign: 'right' } },
+      });
+
+      // Draw total box
+      const finalY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 18 : 480;
+      const boxWidth = 240;
+      const boxHeight = 34;
+      const boxX = pageW - margin - boxWidth;
+      const boxY = finalY - 8;
+      doc.setFillColor(245, 249, 253);
+      doc.roundedRect ? doc.roundedRect(boxX, boxY, boxWidth, boxHeight, 6, 6, 'F') : doc.rect(boxX, boxY, boxWidth, boxHeight, 'F');
+      doc.setDrawColor(180);
+      doc.setLineWidth(0.8);
+      doc.rect(boxX, boxY, boxWidth, boxHeight);
+      doc.setFontSize(10);
+      doc.setFont(undefined, 'normal');
+      doc.text('Total', boxX + 12, boxY + 20);
+      doc.setFont(undefined, 'bold');
+      doc.text(Number(total).toFixed(2).toString(), boxX + boxWidth - 12, boxY + 20, { align: 'right' });
+
+      // Footer — Subscription ID bottom-left with bold label and normal value
+      const footerY = pageH - 40;
+      doc.setFontSize(9);
+      // Bold label
+      doc.setFont(undefined, 'bold');
+      const label = 'Subscription ID : ';
+      doc.text(label, margin, footerY);
+      // Normal user value after label
+      doc.setFont(undefined, 'normal');
+      const labelWidth = doc.getTextWidth(label);
+      doc.text(document.getElementById('subscriptionId').value || '-', margin + labelWidth, footerY);
+
+      doc.setTextColor(0,0,0);
+
+      const safeName = (document.getElementById('customerName').value || 'customer').replace(/\s+/g,'_');
+      doc.save(`BillingReport_${safeName}_${dayjs().format('YYYYMMDDHHmm')}.pdf`);
+    });
+
+    // DOWNLOAD EXCEL button handler
+    downloadExcelBtn.addEventListener('click', () => {
+      if(!workbookRows.length){ alert('Please upload an Excel file first.'); return; }
+      const customerName = document.getElementById('customerName').value.trim();
+      const startDate = document.getElementById('startDate').value;
+      const endDate = document.getElementById('endDate').value;
+      const subscriptionId = document.getElementById('subscriptionId').value.trim();
+
+      // Build output rows (all rows)
+      const rows = buildOutputRows();
+
+      // Build array of objects for Excel
+      const outRows = rows.map(r => ({
+        "Customer Name": customerName || '',
+        "Start Date": startDate || '',
+        "End Date": endDate || '',
+        "Subscription ID": subscriptionId || '',
+        "Meter Name": r["Meter Name"] || '',
+        "Service Type": r["Service Type"] || '',
+        "Resource Name": r["Resource Name"] || '',
+        "Region": r["Region"] || '',
+        "Total Cost": r["Total Cost"] || ''
+      }));
+
+      // Add final total row
+      const totalVal = computeTotal(rows);
+      const totalRow = {
+        "Customer Name": '',
+        "Start Date": '',
+        "End Date": '',
+        "Subscription ID": '',
+        "Meter Name": '',
+        "Service Type": '',
+        "Resource Name": '',
+        "Region": 'Total',
+        "Total Cost": totalVal
+      };
+      outRows.push(totalRow);
+
+      // Use SheetJS to create workbook
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(outRows, {header: ["Customer Name","Start Date","End Date","Subscription ID","Meter Name","Service Type","Resource Name","Region","Total Cost"]});
+      XLSX.utils.book_append_sheet(wb, ws, document.getElementById('worksheetName').value || 'Report');
+      // Trigger download
+      XLSX.writeFile(wb, `Billing_Report_${(document.getElementById('customerName').value || 'customer').replace(/\s+/g,'_')}_${dayjs().format('YYYYMMDD')}.xlsx`);
+    });
+
+    // Utilities
+    function formatDateHuman(d){
+      if(!d) return '';
+      try{ return dayjs(d).format('D MMMM, YYYY'); }catch(e){ return d; }
+    }
+    function formatNumber(v){
+      if(v===undefined || v===null || v==='') return '';
+      const num = (typeof v==='number')?v:parseFloat(String(v).replace(/[^0-9.-]+/g,''))||0;
+      return Number(num).toFixed(2);
+    }
+
+    // initial message
+    showMessage('Upload Excel file (sheet named Data preferred). Use Auto-map then Preview. Click Download Excel to export mapped data including Customer/Period/Subscription.');
+  })();
+  </script>
+</body>
+</html>
